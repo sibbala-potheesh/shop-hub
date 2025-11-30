@@ -9,54 +9,89 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 🔍 Log: Node & npm version before setup
+        run: |
+          echo "🔎 Checking Node version before setup..."
+          node -v || echo "❌ Node not installed"
+          echo "🔎 Checking npm version before setup..."
+          npm -v || echo "❌ npm not installed"
+
+      - name: 🟦 Setup Node.js (v20)
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
 
-      - name: Install root dependencies
-        run: npm ci
+      - name: 🔍 Log: Node & npm version after setup
+        run: |
+          echo "🟢 Node version after setup:"
+          node -v
+          echo "🟢 npm version after setup:"
+          npm -v
 
-      - name: Create deployment zip
-        run: node scripts/create-deployment-zip.js
+      - name: 📦 Install dependencies (npm ci)
+        run: |
+          echo "📦 Running npm ci..."
+          npm ci
+          echo "✅ npm ci completed!"
 
-      - name: Prepare SSH key
+      - name: 📋 Show installed packages
+        run: |
+          echo "📋 Installed packages summary:"
+          npm ls --depth=1 || true
+
+      - name: 🗜️ Create deployment zip
+        run: |
+          echo "🗜️ Creating deployment zip..."
+          node scripts/create-deployment-zip.js
+          echo "📦 Deployment zip created:"
+          ls -lh *.zip || echo "⚠️ No zip found"
+
+      - name: 🔐 Prepare SSH key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
+          echo "🔐 Preparing SSH key..."
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          echo "🔑 Adding EC2 host to known_hosts..."
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-          # ensure known_hosts has correct permissions
           chmod 644 ~/.ssh/known_hosts
+          echo "✅ SSH key setup complete!"
 
-      - name: Upload deployment zip to EC2
+      - name: 📤 Upload deployment zip to EC2
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
-          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          echo "📤 Uploading deployment zip to EC2..."
+          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip \
+            "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          echo "✅ Upload complete!"
 
-      - name: Remote unzip, install and start
+      - name: 🚀 Remote unzip, install and start
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
+          echo "🚀 Connecting to EC2 and deploying..."
           ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
             set -e
+
+            echo "📁 Setting up remote directory..."
             REMOTE_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
             mkdir -p "$REMOTE_DIR"
             cd "$REMOTE_DIR"
 
-            # ensure unzip is available
+            echo "🔍 Checking for unzip..."
             if ! command -v unzip >/dev/null 2>&1 ; then
+              echo "📦 Installing unzip..."
               if command -v apt-get >/dev/null 2>&1; then
                 sudo apt-get update && sudo apt-get install -y unzip
               elif command -v yum >/dev/null 2>&1; then
@@ -64,21 +99,23 @@ jobs:
               fi
             fi
 
-            # Unzip and install
+            echo "🗜️ Unzipping deployment package..."
             unzip -o shop-hub-deployment.zip -d .
-            # move to app root (if dist/main.js is present under dist/)
-            # Install production deps
+
             if [ -f package.json ]; then
+              echo "📦 Installing production dependencies..."
               npm install --production
             fi
 
-            # Stop any previous instance (best-effort)
-            pkill -f "node dist/main.js" || true
+            echo "🛑 Stopping old process (if any)..."
+            pkill -f "node dist/main.js" || echo "ℹ️ No old process running."
 
-            # Start app in background
+            echo "🚀 Starting application..."
             nohup node dist/main.js > app.log 2>&1 &
 
-            # optional: show last few log lines
+            echo "📄 Last 20 log lines:"
             sleep 1
-            tail -n 20 app.log || true
+            tail -n 20 app.log || echo "⚠️ No logs yet"
           EOF
+
+          echo "✅ Deployment finished!"
