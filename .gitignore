@@ -1,0 +1,16 @@
+api/node_modules
+api/dist/
+api/.env
+app/node_modules
+app/dist/
+app/.env
+api/coverage/
+app/coverage/
+api/logs/
+.DS_Store
+.vscode/
+.idea/
+npm-debug.log
+yarn-error.log
+
+/node_modules
