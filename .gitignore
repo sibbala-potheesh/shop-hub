@@ -1,31 +1,30 @@
-# Node and package artifacts
 node_modules/
 **/node_modules/
 
-# Build / compiled output
+# Build output
 dist/
 **/dist/
 build/
 **/build/
 
-# Coverage and logs
+# Sensitive
+.env
+**/.env
+
+# Noise
 coverage/
 **/coverage/
 logs/
 **/logs/
 
-# Env files
-.env
-**/.env
-
-# IDE / OS files
+# System / IDE files
 .DS_Store
 .vscode/
 .idea/
 
-# npm / yarn logs
+# Logs
 npm-debug.log*
 yarn-error.log*
 
-# Deployment zip (don't accidentally commit built zip)
+# Deployment artifact
 shop-hub-deployment.zip
