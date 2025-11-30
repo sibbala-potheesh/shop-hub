@@ -9,47 +9,47 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout repo
+      - name: "📥 Checkout repo"
         uses: actions/checkout@v4
 
-      - name: 🔍 Log: Node & npm version before setup
+      - name: "🔍 Log: Node & npm version before setup"
         run: |
           echo "🔎 Checking Node version before setup..."
           node -v || echo "❌ Node not installed"
           echo "🔎 Checking npm version before setup..."
           npm -v || echo "❌ npm not installed"
 
-      - name: 🟦 Setup Node.js (v20)
+      - name: "🟦 Setup Node.js (v20)"
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: 🔍 Log: Node & npm version after setup
+      - name: "🔍 Log: Node & npm version after setup"
         run: |
           echo "🟢 Node version after setup:"
           node -v
           echo "🟢 npm version after setup:"
           npm -v
 
-      - name: 📦 Install dependencies (npm ci)
+      - name: "📦 Install dependencies (npm ci)"
         run: |
           echo "📦 Running npm ci..."
           npm ci
           echo "✅ npm ci completed!"
 
-      - name: 📋 Show installed packages
+      - name: "📋 Show installed packages"
         run: |
           echo "📋 Installed packages summary:"
           npm ls --depth=1 || true
 
-      - name: 🗜️ Create deployment zip
+      - name: "🗜️ Create deployment zip"
         run: |
           echo "🗜️ Creating deployment zip..."
           node scripts/create-deployment-zip.js
           echo "📦 Deployment zip created:"
           ls -lh *.zip || echo "⚠️ No zip found"
 
-      - name: 🔐 Prepare SSH key
+      - name: "🔐 Prepare SSH key"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
@@ -63,18 +63,17 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
           echo "✅ SSH key setup complete!"
 
-      - name: 📤 Upload deployment zip to EC2
+      - name: "📤 Upload deployment zip to EC2"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
           echo "📤 Uploading deployment zip to EC2..."
-          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip \
-            "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
           echo "✅ Upload complete!"
 
-      - name: 🚀 Remote unzip, install and start
+      - name: "🚀 Remote unzip, install and start"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
