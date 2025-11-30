@@ -33,7 +33,6 @@ async function createDeploymentZip() {
     throw new Error(`Backend folder not found: ${backendDir}`);
 
   console.log("🧭 Building frontend...");
-
   const reactScriptsPath = path.join(
     frontendDir,
     "node_modules",
@@ -45,7 +44,6 @@ async function createDeploymentZip() {
     );
     run("npm ci", { cwd: frontendDir });
   }
-
   try {
     run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   } catch (err) {
@@ -53,7 +51,6 @@ async function createDeploymentZip() {
     run("npm ci", { cwd: frontendDir });
     run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   }
-
   if (!fs.existsSync(frontendDistDir))
     throw new Error("Frontend dist not found after build");
 
@@ -67,14 +64,31 @@ async function createDeploymentZip() {
     throw new Error("backend/package.json missing");
   const backendPkg = JSON.parse(fs.readFileSync(backendPkgPath));
 
+  console.log("🧩 Ensuring backend dependencies are installed...");
+  const backendNodeModules = path.join(backendDir, "node_modules");
+  if (!fs.existsSync(backendNodeModules)) {
+    run("npm ci", { cwd: backendDir });
+  }
+
   console.log("🧩 Building backend...");
   if (backendPkg.scripts && backendPkg.scripts.build) {
-    run("npm run build", {
-      cwd: backendDir,
-      env: { NODE_OPTIONS: "--max-old-space-size=4096" },
-    });
+    try {
+      run("npm run build", {
+        cwd: backendDir,
+        env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
+      });
+    } catch (err) {
+      console.error(
+        "❌ Backend build failed. Retrying with npm ci and rebuild..."
+      );
+      run("npm ci", { cwd: backendDir });
+      run("npm run build", {
+        cwd: backendDir,
+        env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
+      });
+    }
   } else {
-    console.log("ℹ️ No backend build script found.");
+    console.log("ℹ️ No backend build script found; skipping backend build.");
   }
 
   console.log("🗂️ Creating temporary deployment folder...");
