@@ -1,16 +1,31 @@
-api/node_modules
-api/dist/
-api/.env
-app/node_modules
-app/dist/
-app/.env
-api/coverage/
-app/coverage/
-api/logs/
+# Node and package artifacts
+node_modules/
+**/node_modules/
+
+# Build / compiled output
+dist/
+**/dist/
+build/
+**/build/
+
+# Coverage and logs
+coverage/
+**/coverage/
+logs/
+**/logs/
+
+# Env files
+.env
+**/.env
+
+# IDE / OS files
 .DS_Store
 .vscode/
 .idea/
-npm-debug.log
-yarn-error.log
 
-/node_modules
+# npm / yarn logs
+npm-debug.log*
+yarn-error.log*
+
+# Deployment zip (don't accidentally commit built zip)
+shop-hub-deployment.zip
