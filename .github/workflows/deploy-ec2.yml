@@ -5,9 +5,16 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      FRONTEND_DIR: app
+      BACKEND_DIR: api
+
     steps:
       - name: "📥 Checkout repo"
         uses: actions/checkout@v4
@@ -31,15 +38,15 @@ jobs:
           echo "🟢 npm version after setup:"
           npm -v
 
-      - name: "📦 Install dependencies (npm ci)"
+      - name: "📦 Install root dependencies"
         run: |
-          echo "📦 Running npm ci..."
+          echo "📦 Running npm ci (root)..."
           npm ci
-          echo "✅ npm ci completed!"
+          echo "✅ npm ci root complete"
 
-      - name: "📋 Show installed packages"
+      - name: "📦 Show installed packages (root)"
         run: |
-          echo "📋 Installed packages summary:"
+          echo "📋 Installed packages summary (root):"
           npm ls --depth=1 || true
 
       - name: "🗜️ Create deployment zip"
@@ -49,45 +56,83 @@ jobs:
           echo "📦 Deployment zip created:"
           ls -lh *.zip || echo "⚠️ No zip found"
 
+      - name: "🔐 Optional: Configure AWS credentials (for resolving EC2 IP)"
+        if: ${{ secrets.AWS_ACCESS_KEY_ID && secrets.AWS_SECRET_ACCESS_KEY && secrets.EC2_INSTANCE_ID }}
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: "🔎 Optional: Resolve EC2 public IP from instance id"
+        if: ${{ secrets.AWS_ACCESS_KEY_ID && secrets.AWS_SECRET_ACCESS_KEY && secrets.EC2_INSTANCE_ID }}
+        run: |
+          echo "🔧 Installing awscli..."
+          sudo apt-get update -y
+          sudo apt-get install -y awscli jq
+          echo "🔎 Resolving public IP for instance ${{ secrets.EC2_INSTANCE_ID }}..."
+          IP=$(aws ec2 describe-instances --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" --query "Reservations[].Instances[].PublicIpAddress" --output text)
+          if [ -z "$IP" ] || [ "$IP" = "None" ]; then
+            echo "❌ Could not resolve public IP for instance ${{ secrets.EC2_INSTANCE_ID }}"
+            exit 1
+          fi
+          echo "✅ Resolved EC2 public IP: $IP"
+          echo "EC2_HOST=$IP" >> $GITHUB_ENV
+
       - name: "🔐 Prepare SSH key"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
         run: |
+          set -e
           echo "🔐 Preparing SSH key..."
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "❌ SSH_PRIVATE_KEY secret is missing"
+            exit 1
+          fi
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          if [ -z "${EC2_HOST}" ]; then
+            echo "❌ EC2 host not provided. Set secret EC2_HOST or EC2_INSTANCE_ID."
+            exit 1
+          fi
           echo "🔑 Adding EC2 host to known_hosts..."
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts || true
           chmod 644 ~/.ssh/known_hosts
-          echo "✅ SSH key setup complete!"
+          echo "✅ SSH key setup complete. EC2_HOST=${EC2_HOST}"
 
       - name: "📤 Upload deployment zip to EC2"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
+          set -e
           echo "📤 Uploading deployment zip to EC2..."
-          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
-          echo "✅ Upload complete!"
+          ZIP=$(ls *.zip | head -n1)
+          if [ -z "$ZIP" ]; then
+            echo "❌ No deployment zip found"
+            exit 1
+          fi
+          echo "📦 Uploading $ZIP to ${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          scp -o StrictHostKeyChecking=no "$ZIP" "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          echo "✅ Upload complete: $ZIP"
 
       - name: "🚀 Remote unzip, install and start"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
-          echo "🚀 Connecting to EC2 and deploying..."
+          set -e
+          echo "🚀 Connecting to EC2 and running remote deploy steps..."
           ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
             set -e
-
             echo "📁 Setting up remote directory..."
             REMOTE_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
             mkdir -p "$REMOTE_DIR"
             cd "$REMOTE_DIR"
-
             echo "🔍 Checking for unzip..."
             if ! command -v unzip >/dev/null 2>&1 ; then
               echo "📦 Installing unzip..."
@@ -97,24 +142,18 @@ jobs:
                 sudo yum install -y unzip
               fi
             fi
-
             echo "🗜️ Unzipping deployment package..."
-            unzip -o shop-hub-deployment.zip -d .
-
+            unzip -o *.zip -d .
             if [ -f package.json ]; then
               echo "📦 Installing production dependencies..."
               npm install --production
             fi
-
             echo "🛑 Stopping old process (if any)..."
             pkill -f "node dist/main.js" || echo "ℹ️ No old process running."
-
             echo "🚀 Starting application..."
             nohup node dist/main.js > app.log 2>&1 &
-
-            echo "📄 Last 20 log lines:"
             sleep 1
-            tail -n 20 app.log || echo "⚠️ No logs yet"
+            echo "📄 Last 50 log lines:"
+            tail -n 50 app.log || echo "⚠️ No logs yet"
           EOF
-
-          echo "✅ Deployment finished!"
+          echo "✅ Remote deploy finished!"
