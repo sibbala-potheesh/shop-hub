@@ -1,5 +1,3 @@
-
-
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -13,13 +11,20 @@ import { OrdersModule } from './modules/orders/orders.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    MongooseModule.forRoot(process.env.MONGO_URI || 'mongodb://localhost:27017/nest-ecommerce'),
+    // minimal change in AppModule
+    MongooseModule.forRoot(
+      process.env.MONGO_URI || 'mongodb://localhost:27017/nest-ecommerce',
+      {
+        serverSelectionTimeoutMS: 5000, // fail in 5s
+        socketTimeoutMS: 45000,
+      },
+    ),
     WinstonLoggerModule,
     UsersModule,
     AuthModule,
     AddressModule,
     ProductsModule,
-    OrdersModule
-  ]
+    OrdersModule,
+  ],
 })
 export class AppModule {}
