@@ -1,0 +1,84 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Create deployment zip
+        run: node scripts/create-deployment-zip.js
+
+      - name: Prepare SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          # ensure known_hosts has correct permissions
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload deployment zip to EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
+        run: |
+          scp -o StrictHostKeyChecking=no ./shop-hub-deployment.zip "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+
+      - name: Remote unzip, install and start
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
+        run: |
+          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
+            set -e
+            REMOTE_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
+            mkdir -p "$REMOTE_DIR"
+            cd "$REMOTE_DIR"
+
+            # ensure unzip is available
+            if ! command -v unzip >/dev/null 2>&1 ; then
+              if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update && sudo apt-get install -y unzip
+              elif command -v yum >/dev/null 2>&1; then
+                sudo yum install -y unzip
+              fi
+            fi
+
+            # Unzip and install
+            unzip -o shop-hub-deployment.zip -d .
+            # move to app root (if dist/main.js is present under dist/)
+            # Install production deps
+            if [ -f package.json ]; then
+              npm install --production
+            fi
+
+            # Stop any previous instance (best-effort)
+            pkill -f "node dist/main.js" || true
+
+            # Start app in background
+            nohup node dist/main.js > app.log 2>&1 &
+
+            # optional: show last few log lines
+            sleep 1
+            tail -n 20 app.log || true
+          EOF
