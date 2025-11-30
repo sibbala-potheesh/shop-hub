@@ -21,8 +21,8 @@ async function createDeploymentZip() {
   const frontendDirName = process.env.FRONTEND_DIR || "app";
   const backendDirName = process.env.BACKEND_DIR || "api";
 
-  const backendDir = path.join(rootDir, backendDirName);
   const frontendDir = path.join(rootDir, frontendDirName);
+  const backendDir = path.join(rootDir, backendDirName);
   const frontendDistDir = path.join(frontendDir, "build");
   const backendPublicDir = path.join(backendDir, "public");
   const tempDir = path.join(rootDir, "deploy-temp");
@@ -39,18 +39,16 @@ async function createDeploymentZip() {
     "react-scripts"
   );
   if (!fs.existsSync(reactScriptsPath)) {
-    console.log(
-      "⚠️ react-scripts not found. Installing frontend dependencies..."
-    );
-    run("npm ci", { cwd: frontendDir });
+    run("npm ci --force", { cwd: frontendDir });
   }
+
   try {
     run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   } catch (err) {
-    console.error("❌ Frontend build failed. Retrying with npm ci...");
-    run("npm ci", { cwd: frontendDir });
+    run("npm ci --force", { cwd: frontendDir });
     run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   }
+
   if (!fs.existsSync(frontendDistDir))
     throw new Error("Frontend dist not found after build");
 
@@ -67,7 +65,7 @@ async function createDeploymentZip() {
   console.log("🧩 Ensuring backend dependencies are installed...");
   const backendNodeModules = path.join(backendDir, "node_modules");
   if (!fs.existsSync(backendNodeModules)) {
-    run("npm ci", { cwd: backendDir });
+    run("npm ci --force", { cwd: backendDir });
   }
 
   console.log("🧩 Building backend...");
@@ -78,17 +76,12 @@ async function createDeploymentZip() {
         env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
       });
     } catch (err) {
-      console.error(
-        "❌ Backend build failed. Retrying with npm ci and rebuild..."
-      );
-      run("npm ci", { cwd: backendDir });
+      run("npm ci --force", { cwd: backendDir });
       run("npm run build", {
         cwd: backendDir,
         env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
       });
     }
-  } else {
-    console.log("ℹ️ No backend build script found; skipping backend build.");
   }
 
   console.log("🗂️ Creating temporary deployment folder...");
@@ -123,7 +116,6 @@ async function createDeploymentZip() {
     });
   }
 
-  console.log("📦 Creating production package.json...");
   const files = fs.readdirSync(tempDir);
   const mainFile =
     backendPkg.main ||
