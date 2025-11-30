@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Deploy to EC2 (SSH)
 
 on:
   push:
@@ -19,11 +19,11 @@ jobs:
       - name: "📥 Checkout repo"
         uses: actions/checkout@v4
 
-      - name: "🔍 Log: Node & npm version before setup"
+      - name: "🔍 Node & npm version (before)"
         run: |
-          echo "🔎 Checking Node version before setup..."
+          echo "🔎 Node before setup:"
           node -v || echo "❌ Node not installed"
-          echo "🔎 Checking npm version before setup..."
+          echo "🔎 npm before setup:"
           npm -v || echo "❌ npm not installed"
 
       - name: "🟦 Setup Node.js (v20)"
@@ -31,11 +31,11 @@ jobs:
         with:
           node-version: "20"
 
-      - name: "🔍 Log: Node & npm version after setup"
+      - name: "🔍 Node & npm version (after)"
         run: |
-          echo "🟢 Node version after setup:"
+          echo "🟢 Node after setup:"
           node -v
-          echo "🟢 npm version after setup:"
+          echo "🟢 npm after setup:"
           npm -v
 
       - name: "📦 Install root dependencies"
@@ -44,49 +44,26 @@ jobs:
           npm ci
           echo "✅ npm ci root complete"
 
-      - name: "📦 Show installed packages (root)"
-        run: |
-          echo "📋 Installed packages summary (root):"
-          npm ls --depth=1 || true
-
       - name: "🗜️ Create deployment zip"
         run: |
           echo "🗜️ Creating deployment zip..."
           node scripts/create-deployment-zip.js
-          echo "📦 Deployment zip created:"
-          ls -lh *.zip || echo "⚠️ No zip found"
-
-      - name: "🔐 Optional: Configure AWS credentials (for resolving EC2 IP)"
-        if: ${{ secrets.AWS_ACCESS_KEY_ID && secrets.AWS_SECRET_ACCESS_KEY && secrets.EC2_INSTANCE_ID }}
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-
-      - name: "🔎 Optional: Resolve EC2 public IP from instance id"
-        if: ${{ secrets.AWS_ACCESS_KEY_ID && secrets.AWS_SECRET_ACCESS_KEY && secrets.EC2_INSTANCE_ID }}
-        run: |
-          echo "🔧 Installing awscli..."
-          sudo apt-get update -y
-          sudo apt-get install -y awscli jq
-          echo "🔎 Resolving public IP for instance ${{ secrets.EC2_INSTANCE_ID }}..."
-          IP=$(aws ec2 describe-instances --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" --query "Reservations[].Instances[].PublicIpAddress" --output text)
-          if [ -z "$IP" ] || [ "$IP" = "None" ]; then
-            echo "❌ Could not resolve public IP for instance ${{ secrets.EC2_INSTANCE_ID }}"
+          ZIP=$(ls *.zip | head -n1 || true)
+          if [ -z "$ZIP" ]; then
+            echo "❌ No zip produced by create-deployment-zip.js"
             exit 1
           fi
-          echo "✅ Resolved EC2 public IP: $IP"
-          echo "EC2_HOST=$IP" >> $GITHUB_ENV
+          echo "✅ Created $ZIP"
+          echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
 
       - name: "🔐 Prepare SSH key"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           set -e
           echo "🔐 Preparing SSH key..."
-          if [ -z "$SSH_PRIVATE_KEY" ]; then
+          if [ -z "${SSH_PRIVATE_KEY}" ]; then
             echo "❌ SSH_PRIVATE_KEY secret is missing"
             exit 1
           fi
@@ -94,25 +71,28 @@ jobs:
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           if [ -z "${EC2_HOST}" ]; then
-            echo "❌ EC2 host not provided. Set secret EC2_HOST or EC2_INSTANCE_ID."
+            echo "❌ EC2_HOST secret is missing"
             exit 1
           fi
           echo "🔑 Adding EC2 host to known_hosts..."
           ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts || true
           chmod 644 ~/.ssh/known_hosts
-          echo "✅ SSH key setup complete. EC2_HOST=${EC2_HOST}"
+          echo "✅ SSH key ready. EC2_HOST=${EC2_HOST}"
 
       - name: "📤 Upload deployment zip to EC2"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
           set -e
           echo "📤 Uploading deployment zip to EC2..."
-          ZIP=$(ls *.zip | head -n1)
+          ZIP="${{ env.ZIP_NAME }}"
           if [ -z "$ZIP" ]; then
-            echo "❌ No deployment zip found"
+            ZIP=$(ls *.zip | head -n1 || true)
+          fi
+          if [ -z "$ZIP" ]; then
+            echo "❌ No zip found to upload"
             exit 1
           fi
           echo "📦 Uploading $ZIP to ${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
@@ -122,14 +102,14 @@ jobs:
       - name: "🚀 Remote unzip, install and start"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ env.EC2_HOST || secrets.EC2_HOST }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
           set -e
           echo "🚀 Connecting to EC2 and running remote deploy steps..."
           ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
             set -e
-            echo "📁 Setting up remote directory..."
+            echo "📁 Ensuring remote directory exists..."
             REMOTE_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
             mkdir -p "$REMOTE_DIR"
             cd "$REMOTE_DIR"
