@@ -1,4 +1,3 @@
-// scripts/create-deployment-zip.js
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
@@ -7,8 +6,9 @@ const archiver = require("archiver");
 const PROJECT_NAME = "shop-hub";
 
 function run(cmd, opts = {}) {
-  console.log(`> ${cmd}`);
-  return execSync(cmd, { stdio: "inherit", ...opts });
+  const env = opts.env ? { ...process.env, ...opts.env } : process.env;
+  console.log(`> ${cmd}  (cwd: ${opts.cwd || process.cwd()})`);
+  return execSync(cmd, { stdio: "inherit", cwd: opts.cwd, env });
 }
 
 async function createDeploymentZip() {
@@ -18,18 +18,22 @@ async function createDeploymentZip() {
     `${PROJECT_NAME}-deployment.zip`
   );
 
-  const backendDir = path.join(rootDir, "api");
-  const frontendDir = path.join(rootDir, "app");
+  const frontendDirName = process.env.FRONTEND_DIR || "app";
+  const backendDirName = process.env.BACKEND_DIR || "api";
+
+  const backendDir = path.join(rootDir, backendDirName);
+  const frontendDir = path.join(rootDir, frontendDirName);
   const frontendDistDir = path.join(frontendDir, "build");
   const backendPublicDir = path.join(backendDir, "public");
   const tempDir = path.join(rootDir, "deploy-temp");
 
-  if (!fs.existsSync(frontendDir)) throw new Error("Frontend folder not found");
-  if (!fs.existsSync(backendDir)) throw new Error("Backend folder not found");
+  if (!fs.existsSync(frontendDir))
+    throw new Error(`Frontend folder not found: ${frontendDir}`);
+  if (!fs.existsSync(backendDir))
+    throw new Error(`Backend folder not found: ${backendDir}`);
 
   console.log("🧭 Building frontend...");
 
-  // Ensure frontend dependencies are installed (react-scripts could be missing)
   const reactScriptsPath = path.join(
     frontendDir,
     "node_modules",
@@ -37,30 +41,17 @@ async function createDeploymentZip() {
   );
   if (!fs.existsSync(reactScriptsPath)) {
     console.log(
-      "⚠️ react-scripts not found. Installing frontend dependencies (npm ci)..."
+      "⚠️ react-scripts not found. Installing frontend dependencies..."
     );
-    try {
-      run("npm ci", { cwd: frontendDir });
-    } catch (err) {
-      console.error("❌ npm ci failed in frontend. See logs above.");
-      throw err;
-    }
+    run("npm ci", { cwd: frontendDir });
   }
 
-  // Try build, and if it fails try one reinstall + retry to be resilient in CI.
   try {
-    run("npm run build", { cwd: frontendDir });
+    run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   } catch (err) {
-    console.error(
-      "❌ Frontend build failed on first attempt. Retrying with fresh install..."
-    );
-    try {
-      run("npm ci", { cwd: frontendDir });
-      run("npm run build", { cwd: frontendDir });
-    } catch (err2) {
-      console.error("❌ Frontend build failed after retry. Aborting.");
-      throw err2;
-    }
+    console.error("❌ Frontend build failed. Retrying with npm ci...");
+    run("npm ci", { cwd: frontendDir });
+    run("npm run build", { cwd: frontendDir, env: { CI: "false" } });
   }
 
   if (!fs.existsSync(frontendDistDir))
@@ -76,19 +67,14 @@ async function createDeploymentZip() {
     throw new Error("backend/package.json missing");
   const backendPkg = JSON.parse(fs.readFileSync(backendPkgPath));
 
-  console.log("🧩 Building backend (if applicable)...");
+  console.log("🧩 Building backend...");
   if (backendPkg.scripts && backendPkg.scripts.build) {
-    try {
-      run("npm run build", {
-        cwd: backendDir,
-        env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
-      });
-    } catch (err) {
-      console.error("❌ Backend build failed.");
-      throw err;
-    }
+    run("npm run build", {
+      cwd: backendDir,
+      env: { NODE_OPTIONS: "--max-old-space-size=4096" },
+    });
   } else {
-    console.log("ℹ️ No backend build script found; skipping backend build.");
+    console.log("ℹ️ No backend build script found.");
   }
 
   console.log("🗂️ Creating temporary deployment folder...");
@@ -166,8 +152,8 @@ function zipFolder(srcDir, outPath) {
     const output = fs.createWriteStream(outPath);
     const archive = archiver("zip", { zlib: { level: 9 } });
 
-    output.on("close", () => resolve());
-    archive.on("error", (err) => reject(err));
+    output.on("close", resolve);
+    archive.on("error", reject);
 
     archive.pipe(output);
     archive.directory(srcDir, false);
