@@ -56,36 +56,86 @@ jobs:
           echo "✅ Created $ZIP"
           echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
 
-      - name: "🔐 Prepare SSH key"
+      # Use ssh-agent action to safely add the key into an agent
+      - name: "🔐 Start ssh-agent and add key"
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      # Prepare known_hosts and show local ~/.ssh for debugging
+      - name: "🔐 Prepare known_hosts & show SSH dir"
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          set -e
-          echo "🔐 Preparing SSH key..."
-          if [ -z "${SSH_PRIVATE_KEY}" ]; then
-            echo "❌ SSH_PRIVATE_KEY secret is missing"
-            exit 1
-          fi
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          if [ -z "${EC2_HOST}" ]; then
+          echo "🔑 Adding EC2_HOST to known_hosts (ssh-keyscan)..."
+          if [ -n "${EC2_HOST:-}" ]; then
+            ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts || true
+          else
             echo "❌ EC2_HOST secret is missing"
             exit 1
           fi
-          echo "🔑 Adding EC2 host to known_hosts..."
-          ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts || true
           chmod 644 ~/.ssh/known_hosts
-          echo "✅ SSH key ready. EC2_HOST=${EC2_HOST}"
+          echo "🗒️ ~/.ssh listing:"
+          ls -la ~/.ssh || true
+          echo "🗒️ known_hosts (first 5 lines):"
+          head -n 5 ~/.ssh/known_hosts || true
 
+      # Compute fingerprint from private key (derived public) — will fail if private-key format is wrong
+      - name: "🔍 Debug: fingerprint of SSH_PRIVATE_KEY (derived public)"
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          TMP=/tmp/id_rsa_for_fp
+          printf "%s\n" "$SSH_PRIVATE_KEY" > "$TMP"
+          chmod 600 "$TMP"
+          if ssh-keygen -y -f "$TMP" > "${TMP}.pub" 2>/dev/null; then
+            echo "Fingerprint of derived public key (from secret):"
+            ssh-keygen -lf "${TMP}.pub" || true
+          else
+            echo "❌ Failed to derive public key from private key. Check private key format (header/footer, CRLF, etc.)"
+            rm -f "$TMP" "${TMP}.pub" || true
+            exit 1
+          fi
+          rm -f "$TMP" "${TMP}.pub"
+
+      # Attempt to read remote authorized_keys (best-effort; may fail when auth fails)
+      - name: "🔎 Remote: attempt to list remote authorized_keys (best-effort)"
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
+          echo "Attempting to read remote ~/.ssh/authorized_keys (may fail if auth not working)..."
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes "${EC2_USER}@${EC2_HOST}" \
+              'awk '\''{for(i=1;i<=NF;i++) if ($i ~ /^(ssh-|ecdsa-|sk-|ed25519-)/) {print $i" "$(i+1); break}}'\'' ~/.ssh/authorized_keys' \
+            || echo "⚠️ Could not read remote authorized_keys (this is expected if auth fails)"
+
+      # Verbose SSH debug — shows which username is attempted and which keys the client offers
+      - name: "🔎 SSH debug - verbose (will show auth negotiation)"
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
+          # write the key to disk for ssh -i; ssh-agent already has it but this helps IdentitiesOnly tests
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa_debug
+          chmod 600 ~/.ssh/id_rsa_debug
+          echo "Running ssh -vvv to see auth negotiation (this shows attempted username & keys tried):"
+          ssh -i ~/.ssh/id_rsa_debug -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -vvv "${EC2_USER}@${EC2_HOST}" "echo CONNECTED" || echo "SSH debug ended with non-zero exit (expected if auth fails)"
+
+      # Upload the zip using scp (ssh-agent supplies key)
       - name: "📤 Upload deployment zip to EC2"
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
-          set -e
+          set -euo pipefail
           echo "📤 Uploading deployment zip to EC2..."
           ZIP="${{ env.ZIP_NAME }}"
           if [ -z "$ZIP" ]; then
@@ -95,8 +145,10 @@ jobs:
             echo "❌ No zip found to upload"
             exit 1
           fi
-          echo "📦 Uploading $ZIP to ${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
-          scp -o StrictHostKeyChecking=no "$ZIP" "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR:-/home/${EC2_USER}}/"
+          TARGET_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
+          echo "📦 Uploading $ZIP to ${EC2_USER}@${EC2_HOST}:${TARGET_DIR}/"
+          # Use scp; ssh-agent provides the identity so no private key file must be committed
+          scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes "$ZIP" "${EC2_USER}@${EC2_HOST}:${TARGET_DIR}/"
           echo "✅ Upload complete: $ZIP"
 
       - name: "🚀 Remote unzip, install and start"
@@ -105,9 +157,9 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
         run: |
-          set -e
+          set -euo pipefail
           echo "🚀 Connecting to EC2 and running remote deploy steps..."
-          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes "${EC2_USER}@${EC2_HOST}" << 'EOF'
             set -e
             echo "📁 Ensuring remote directory exists..."
             REMOTE_DIR="${REMOTE_DIR:-/home/${EC2_USER}}"
